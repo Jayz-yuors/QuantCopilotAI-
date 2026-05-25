@@ -1,0 +1,562 @@
+{
+  "name": "QuantCopilot AI — Full Market Automation",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "30 11 * * 1-5"
+            }
+          ]
+        }
+      },
+      "id": "node-daily-trigger",
+      "name": "Daily Market Close Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [60, 120],
+      "notes": "Runs every weekday at 16:30 IST (= 11:00 UTC). Triggers the daily market data pipeline."
+    },
+    {
+      "parameters": {
+        "command": "cd /D C:\\Users\\Shruti\\jk\\Python\\Python_GUI\\Project_series\\8.QuantCopilotAI\\backend && python3 fetcher.py 2>&1"
+      },
+      "id": "node-run-fetcher",
+      "name": "Run Data Fetcher",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [280, 120]
+    },
+    {
+      "parameters": {
+        "command": "cd /D C:\\Users\\Shruti\\jk\\Python\\Python_GUI\\Project_series\\8.QuantCopilotAI\\backend && python3 indicators.py 2>&1"
+      },
+      "id": "node-run-indicators",
+      "name": "Run Indicator Engine",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [500, 120]
+    },
+    {
+      "parameters": {
+        "command": "cd /D C:\\Users\\Shruti\\jk\\Python\\Python_GUI\\Project_series\\8.QuantCopilotAI\\backend && python3 regime_model.py 2>&1"
+      },
+      "id": "node-run-regime",
+      "name": "Run Regime Model",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [720, 120]
+    },
+    {
+      "parameters": {
+        "command": "cd /D C:\\Users\\Shruti\\jk\\Python\\Python_GUI\\Project_series\\8.QuantCopilotAI\\backend && python3 test_regime_fixes.py 2>&1"
+      },
+      "id": "node-run-tests",
+      "name": "Run Validation Tests",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [940, 120]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-exit-code",
+              "leftValue": "={{ $json.exitCode }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "node-tests-passed",
+      "name": "Tests Passed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1160, 120]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "assign-failure-msg",
+              "name": "failure_message",
+              "value": "={{ 'QuantCopilot AI Validation FAILED at ' + $now.toISO() + '\\n\\nOutput:\\n' + $json.stdout + '\\n\\nError:\\n' + $json.stderr }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node-check-test-result",
+      "name": "Check Test Result",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1380, 260]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT mr.trade_date, mr.regime_label, ROUND(mr.confidence_score::numeric, 4) AS confidence_score, mr.volatility_level, COUNT(DISTINCT ti.asset_id) AS assets_analyzed FROM market_regimes mr LEFT JOIN technical_indicators ti ON ti.trade_date = mr.trade_date WHERE mr.trade_date = (SELECT MAX(trade_date) FROM market_regimes) GROUP BY mr.trade_date, mr.regime_label, mr.confidence_score, mr.volatility_level LIMIT 1;",
+        "options": {}
+      },
+      "id": "node-fetch-regime-summary",
+      "name": "Fetch Today's Regime Summary",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1380, 40],
+      "credentials": {
+        "postgres": {
+          "id": "quantcopilot-postgres",
+          "name": "QuantCopilot PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT ma.ticker_symbol, ma.asset_name, ma.sector, mph.close_price, mph.volume, ti.rsi, ti.macd, ti.volatility, ti.daily_return, ROUND((ti.daily_return * 100)::numeric, 2) AS daily_return_pct FROM market_price_history mph JOIN market_assets ma ON ma.asset_id = mph.asset_id JOIN technical_indicators ti ON ti.asset_id = mph.asset_id AND ti.trade_date = mph.trade_date WHERE mph.trade_date = (SELECT MAX(trade_date) FROM market_price_history) ORDER BY ABS(ti.daily_return) DESC LIMIT 5;",
+        "options": {}
+      },
+      "id": "node-fetch-top-movers",
+      "name": "Fetch Top Movers",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1380, 180],
+      "credentials": {
+        "postgres": {
+          "id": "quantcopilot-postgres",
+          "name": "QuantCopilot PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const regimeData = $('Fetch Today\\'s Regime Summary').first().json;\nconst moversData = $('Fetch Top Movers').all();\n\nconst now = new Date();\nconst dateStr = now.toLocaleDateString('en-IN', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });\n\nconst regimeEmoji = { 'BULL': '🐂', 'BEAR': '🐻', 'HIGH_VOLATILITY': '⚡', 'SIDEWAYS': '↔️' };\nconst regime = regimeData?.regime_label || 'UNKNOWN';\nconst emoji = regimeEmoji[regime] || '📊';\nconst confidence = regimeData?.confidence_score ? (parseFloat(regimeData.confidence_score) * 100).toFixed(1) : 'N/A';\nconst volatility = regimeData?.volatility_level || 'N/A';\nconst assets = regimeData?.assets_analyzed || 'N/A';\n\nlet moversText = '';\nlet moversHtml = '<table border=\"1\" cellpadding=\"6\" cellspacing=\"0\" style=\"border-collapse:collapse;width:100%;font-family:monospace;\"><tr style=\"background:#1a1a2e;color:#e0e0e0;\"><th>Ticker</th><th>Company</th><th>Sector</th><th>Close</th><th>RSI</th><th>Return</th></tr>';\n\nfor (const item of moversData) {\n  const d = item.json;\n  const sign = parseFloat(d.daily_return_pct) >= 0 ? '+' : '';\n  const arrow = parseFloat(d.daily_return_pct) >= 0 ? '↑' : '↓';\n  moversText += `\\n  ${arrow} ${d.ticker_symbol} (${d.asset_name}) | Close: ₹${parseFloat(d.close_price).toFixed(2)} | RSI: ${parseFloat(d.rsi).toFixed(1)} | Return: ${sign}${d.daily_return_pct}%`;\n  const color = parseFloat(d.daily_return_pct) >= 0 ? 'green' : 'red';\n  moversHtml += `<tr><td><b>${d.ticker_symbol}</b></td><td>${d.asset_name}</td><td>${d.sector || 'N/A'}</td><td>₹${parseFloat(d.close_price).toFixed(2)}</td><td>${parseFloat(d.rsi).toFixed(1)}</td><td style=\"color:${color}\">${sign}${d.daily_return_pct}%</td></tr>`;\n}\nmoversHtml += '</table>';\n\nconst telegramMessage = `📈 *QuantCopilot AI — Daily Market Report*\\n🗓 ${dateStr}\\n━━━━━━━━━━━━━━━━━━━━━\\n${emoji} *Market Regime:* ${regime}\\n📊 *Confidence:* ${confidence}%\\n🌊 *Volatility:* ${volatility}\\n🏢 *Assets Analyzed:* ${assets}\\n━━━━━━━━━━━━━━━━━━━━━\\n🔥 *Top Movers Today:*${moversText}\\n━━━━━━━━━━━━━━━━━━━━━\\n⚡ Powered by QuantCopilot AI`;\n\nconst regimeCssClass = regime === 'BULL' ? 'bull' : regime === 'BEAR' ? 'bear' : regime === 'HIGH_VOLATILITY' ? 'highvol' : 'sideways';\n\nconst emailHtml = `<!DOCTYPE html><html><head><style>body{font-family:'Segoe UI',Arial,sans-serif;background:#0d0d1a;color:#e0e0e0;margin:0;padding:20px}.container{max-width:700px;margin:0 auto;background:#1a1a2e;border-radius:12px;padding:30px}h1{color:#00d4ff;font-size:24px;border-bottom:2px solid #00d4ff;padding-bottom:10px}.badge{display:inline-block;padding:6px 16px;border-radius:20px;font-weight:bold;font-size:16px}.bull{background:#004d00;color:#00ff88}.bear{background:#4d0000;color:#ff4444}.highvol{background:#4d3300;color:#ffaa00}.sideways{background:#1a1a4d;color:#8888ff}.metric{background:#0d0d2e;border-radius:8px;padding:12px 20px;margin:8px 0}.metric-label{color:#888;font-size:12px;text-transform:uppercase}.metric-value{font-size:22px;font-weight:bold;color:#00d4ff}.footer{margin-top:20px;text-align:center;color:#555;font-size:12px}</style></head><body><div class=\"container\"><h1>📈 QuantCopilot AI — Daily Report</h1><p style=\"color:#888\">🗓 ${dateStr}</p><div class=\"metric\"><div class=\"metric-label\">Market Regime</div><span class=\"badge ${regimeCssClass}\">${emoji} ${regime}</span></div><div class=\"metric\"><div class=\"metric-label\">Model Confidence</div><div class=\"metric-value\">${confidence}%</div></div><div class=\"metric\"><div class=\"metric-label\">Volatility Level</div><div class=\"metric-value\">${volatility}</div></div><div class=\"metric\"><div class=\"metric-label\">Assets Analyzed</div><div class=\"metric-value\">${assets}</div></div><h2 style=\"color:#00d4ff;margin-top:24px\">🔥 Top Movers</h2>${moversHtml}<div class=\"footer\">Powered by QuantCopilot AI &bull; KMeans Regime Detection v2.0</div></div></body></html>`;\n\nreturn [{ json: { telegram_message: telegramMessage, email_html: emailHtml, email_subject: `QuantCopilot AI Report — ${regime} Regime | ${dateStr}`, regime, confidence, date: dateStr } }];",
+        "options": {}
+      },
+      "id": "node-build-report",
+      "name": "Build Daily Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1600, 120]
+    },
+    {
+      "parameters": {
+        "chatId": "YOUR_TELEGRAM_CHAT_ID",
+        "text": "={{ $json.telegram_message }}",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "node-send-telegram-report",
+      "name": "Send Telegram Report",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1820, 60],
+      "credentials": {
+        "telegramApi": {
+          "id": "quantcopilot-telegram",
+          "name": "QuantCopilot Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "fromEmail": "your-gmail@gmail.com",
+        "toEmail": "your-email@gmail.com",
+        "subject": "={{ $json.email_subject }}",
+        "emailType": "html",
+        "message": "={{ $json.email_html }}",
+        "options": {}
+      },
+      "id": "node-send-email-report",
+      "name": "Send Email Report",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [1820, 180],
+      "credentials": {
+        "smtp": {
+          "id": "quantcopilot-gmail",
+          "name": "QuantCopilot Gmail SMTP"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "fromEmail": "your-gmail@gmail.com",
+        "toEmail": "your-email@gmail.com",
+        "subject": "🚨 QuantCopilot AI — Validation FAILED",
+        "emailType": "html",
+        "message": "=<html><body style=\"font-family:Arial;background:#1a0000;color:#ff4444;padding:20px\"><h1>🚨 QuantCopilot AI Validation Failed</h1><pre style=\"background:#0d0d0d;color:#ff8888;padding:16px;border-radius:8px\">{{ $json.failure_message }}</pre><p style=\"color:#888\">Please check your Python backend scripts immediately.</p></body></html>",
+        "options": {}
+      },
+      "id": "node-send-failure-alert",
+      "name": "Send Failure Alert",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [1600, 320],
+      "credentials": {
+        "smtp": {
+          "id": "quantcopilot-gmail",
+          "name": "QuantCopilot Gmail SMTP"
+        }
+      }
+    },
+
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "45 3 * * 1-5"
+            }
+          ]
+        }
+      },
+      "id": "node-rsi-trigger",
+      "name": "RSI Alert Scan (Morning)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [60, 440],
+      "notes": "Runs every weekday at 09:15 IST (= 03:45 UTC)"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT ma.ticker_symbol, ma.asset_name, ma.sector, ti.trade_date, ROUND(ti.rsi::numeric, 2) AS rsi, ROUND(ti.macd::numeric, 4) AS macd, ROUND((ti.daily_return * 100)::numeric, 2) AS daily_return_pct, ROUND(mph.close_price::numeric, 2) AS close_price, CASE WHEN ti.rsi < 30 THEN 'OVERSOLD' WHEN ti.rsi > 70 THEN 'OVERBOUGHT' ELSE 'NEUTRAL' END AS rsi_signal FROM technical_indicators ti JOIN market_assets ma ON ma.asset_id = ti.asset_id JOIN market_price_history mph ON mph.asset_id = ti.asset_id AND mph.trade_date = ti.trade_date WHERE ti.trade_date = (SELECT MAX(trade_date) FROM technical_indicators) AND (ti.rsi < 30 OR ti.rsi > 70) ORDER BY CASE WHEN ti.rsi < 30 THEN ti.rsi ELSE -ti.rsi END ASC LIMIT 20;",
+        "options": {}
+      },
+      "id": "node-fetch-rsi-extremes",
+      "name": "Fetch RSI Extremes",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [280, 440],
+      "credentials": {
+        "postgres": {
+          "id": "quantcopilot-postgres",
+          "name": "QuantCopilot PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\n\nif (!items || items.length === 0) {\n  return [{ json: { has_alerts: false, message: '', count: 0 } }];\n}\n\nconst now = new Date();\nconst dateStr = now.toLocaleDateString('en-IN', { year: 'numeric', month: 'short', day: 'numeric' });\n\nconst oversold = items.filter(i => i.json.rsi_signal === 'OVERSOLD');\nconst overbought = items.filter(i => i.json.rsi_signal === 'OVERBOUGHT');\n\nlet msg = `🔔 *QuantCopilot AI — RSI Extreme Alert*\\n🗓 ${dateStr}\\n━━━━━━━━━━━━━━━━━━━━━`;\n\nif (oversold.length > 0) {\n  msg += `\\n\\n📉 *OVERSOLD (RSI < 30):*`;\n  for (const item of oversold) {\n    const d = item.json;\n    msg += `\\n  🟢 *${d.ticker_symbol}* — RSI: ${d.rsi} | ₹${d.close_price} | ${d.daily_return_pct}%`;\n  }\n}\n\nif (overbought.length > 0) {\n  msg += `\\n\\n📈 *OVERBOUGHT (RSI > 70):*`;\n  for (const item of overbought) {\n    const d = item.json;\n    msg += `\\n  🔴 *${d.ticker_symbol}* — RSI: ${d.rsi} | ₹${d.close_price} | ${d.daily_return_pct}%`;\n  }\n}\n\nmsg += `\\n━━━━━━━━━━━━━━━━━━━━━\\n⚡ QuantCopilot AI | ${items.length} alerts`;\n\nreturn [{ json: { has_alerts: true, message: msg, count: items.length, oversold_count: oversold.length, overbought_count: overbought.length } }];",
+        "options": {}
+      },
+      "id": "node-format-rsi-alerts",
+      "name": "Format RSI Alerts",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [500, 440]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-has-rsi-alerts",
+              "leftValue": "={{ $json.has_alerts }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "node-has-rsi-alerts",
+      "name": "Has RSI Alerts?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [720, 440]
+    },
+    {
+      "parameters": {
+        "chatId": "YOUR_TELEGRAM_CHAT_ID",
+        "text": "={{ $json.message }}",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "node-send-rsi-telegram",
+      "name": "Send RSI Alert Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [940, 440],
+      "credentials": {
+        "telegramApi": {
+          "id": "quantcopilot-telegram",
+          "name": "QuantCopilot Telegram Bot"
+        }
+      }
+    },
+
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "30 19 * * 0"
+            }
+          ]
+        }
+      },
+      "id": "node-weekly-trigger",
+      "name": "Weekly Regime Retrain Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [60, 640],
+      "notes": "Runs every Sunday at 01:00 IST (= 19:30 UTC Saturday)"
+    },
+    {
+      "parameters": {
+        "command": "cd /D C:\\Users\\Shruti\\jk\\Python\\Python_GUI\\Project_series\\8.QuantCopilotAI\\backend && python3 regime_model.py 2>&1"
+      },
+      "id": "node-retrain-regime",
+      "name": "Retrain Regime Model",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [280, 640]
+    },
+    {
+      "parameters": {
+        "chatId": "YOUR_TELEGRAM_CHAT_ID",
+        "text": "={{ '🔄 *QuantCopilot AI — Weekly Retrain Complete*\\n\\n✅ Regime model retrained at ' + $now.toISO() + '\\nExit Code: ' + $json.exitCode + '\\n' + ($json.exitCode === 0 ? '🎯 Model is ready for the week ahead!' : '⚠️ Retrain had issues — check logs.') }}",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "node-notify-retrain",
+      "name": "Notify Retrain Complete",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [500, 640],
+      "credentials": {
+        "telegramApi": {
+          "id": "quantcopilot-telegram",
+          "name": "QuantCopilot Telegram Bot"
+        }
+      }
+    },
+
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 */8 * * *"
+            }
+          ]
+        }
+      },
+      "id": "node-db-health-trigger",
+      "name": "DB Health Check (8h)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [60, 840],
+      "notes": "Runs every 8 hours to check database health"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT (SELECT COUNT(*) FROM market_assets) AS total_assets, (SELECT COUNT(*) FROM market_price_history) AS total_price_records, (SELECT COUNT(*) FROM technical_indicators) AS total_indicator_records, (SELECT COUNT(*) FROM market_regimes) AS total_regime_records, (SELECT MAX(trade_date) FROM market_price_history) AS latest_price_date, (SELECT MAX(trade_date) FROM technical_indicators) AS latest_indicator_date, (SELECT MAX(trade_date) FROM market_regimes) AS latest_regime_date, ((SELECT MAX(trade_date) FROM market_price_history) >= CURRENT_DATE - INTERVAL '5 days') AS data_is_fresh;",
+        "options": {}
+      },
+      "id": "node-db-health-query",
+      "name": "DB Health Query",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [280, 840],
+      "credentials": {
+        "postgres": {
+          "id": "quantcopilot-postgres",
+          "name": "QuantCopilot PostgreSQL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $input.first().json;\n\nconst issues = [];\n\nif (parseInt(d.total_assets) === 0) issues.push('No market assets found in database');\nif (parseInt(d.total_price_records) < 100) issues.push(`Low price records: only ${d.total_price_records} rows`);\nif (parseInt(d.total_indicator_records) < 100) issues.push(`Low indicator records: only ${d.total_indicator_records} rows`);\nif (parseInt(d.total_regime_records) === 0) issues.push('No regime records found — model may not have run');\nif (String(d.data_is_fresh) === 'false') issues.push(`Data may be stale — latest: ${d.latest_price_date}`);\n\nconst isHealthy = issues.length === 0;\n\nconst summary = `DB Health Check — ${new Date().toISOString()}\\n\\nAssets: ${d.total_assets}\\nPrice Records: ${d.total_price_records}\\nIndicator Records: ${d.total_indicator_records}\\nRegime Records: ${d.total_regime_records}\\nLatest Price: ${d.latest_price_date}\\nLatest Regime: ${d.latest_regime_date}\\nFresh Data: ${d.data_is_fresh}\\n\\n${isHealthy ? 'Database is HEALTHY' : 'Issues:\\n' + issues.join('\\n')}`;\n\nreturn [{ json: { is_healthy: isHealthy, issue_count: issues.length, issues, summary, stats: d } }];",
+        "options": {}
+      },
+      "id": "node-evaluate-db-health",
+      "name": "Evaluate DB Health",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [500, 840]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-db-unhealthy",
+              "leftValue": "={{ $json.is_healthy }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "node-db-unhealthy",
+      "name": "DB Unhealthy?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [720, 840]
+    },
+    {
+      "parameters": {
+        "fromEmail": "your-gmail@gmail.com",
+        "toEmail": "your-email@gmail.com",
+        "subject": "🚨 QuantCopilot AI — Database Health Alert",
+        "emailType": "html",
+        "message": "=<html><body style=\"font-family:Arial;background:#0d0000;color:#ffaaaa;padding:20px\"><h1>🚨 DB Health Alert</h1><pre style=\"background:#1a0000;color:#ff8888;padding:16px;border-radius:8px;white-space:pre-wrap\">{{ $json.summary }}</pre><p>Issues: <strong>{{ $json.issue_count }}</strong></p></body></html>",
+        "options": {}
+      },
+      "id": "node-send-db-health-alert",
+      "name": "Send DB Health Alert",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [940, 840],
+      "credentials": {
+        "smtp": {
+          "id": "quantcopilot-gmail",
+          "name": "QuantCopilot Gmail SMTP"
+        }
+      }
+    }
+  ],
+
+  "connections": {
+    "Daily Market Close Trigger": {
+      "main": [[{ "node": "Run Data Fetcher", "type": "main", "index": 0 }]]
+    },
+    "Run Data Fetcher": {
+      "main": [[{ "node": "Run Indicator Engine", "type": "main", "index": 0 }]]
+    },
+    "Run Indicator Engine": {
+      "main": [[{ "node": "Run Regime Model", "type": "main", "index": 0 }]]
+    },
+    "Run Regime Model": {
+      "main": [[{ "node": "Run Validation Tests", "type": "main", "index": 0 }]]
+    },
+    "Run Validation Tests": {
+      "main": [[{ "node": "Tests Passed?", "type": "main", "index": 0 }]]
+    },
+    "Tests Passed?": {
+      "main": [
+        [
+          { "node": "Fetch Today's Regime Summary", "type": "main", "index": 0 },
+          { "node": "Fetch Top Movers", "type": "main", "index": 0 }
+        ],
+        [{ "node": "Check Test Result", "type": "main", "index": 0 }]
+      ]
+    },
+    "Fetch Today's Regime Summary": {
+      "main": [[{ "node": "Build Daily Report", "type": "main", "index": 0 }]]
+    },
+    "Fetch Top Movers": {
+      "main": [[{ "node": "Build Daily Report", "type": "main", "index": 0 }]]
+    },
+    "Build Daily Report": {
+      "main": [
+        [
+          { "node": "Send Telegram Report", "type": "main", "index": 0 },
+          { "node": "Send Email Report", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Check Test Result": {
+      "main": [[{ "node": "Send Failure Alert", "type": "main", "index": 0 }]]
+    },
+    "RSI Alert Scan (Morning)": {
+      "main": [[{ "node": "Fetch RSI Extremes", "type": "main", "index": 0 }]]
+    },
+    "Fetch RSI Extremes": {
+      "main": [[{ "node": "Format RSI Alerts", "type": "main", "index": 0 }]]
+    },
+    "Format RSI Alerts": {
+      "main": [[{ "node": "Has RSI Alerts?", "type": "main", "index": 0 }]]
+    },
+    "Has RSI Alerts?": {
+      "main": [
+        [{ "node": "Send RSI Alert Telegram", "type": "main", "index": 0 }],
+        []
+      ]
+    },
+    "Weekly Regime Retrain Trigger": {
+      "main": [[{ "node": "Retrain Regime Model", "type": "main", "index": 0 }]]
+    },
+    "Retrain Regime Model": {
+      "main": [[{ "node": "Notify Retrain Complete", "type": "main", "index": 0 }]]
+    },
+    "DB Health Check (8h)": {
+      "main": [[{ "node": "DB Health Query", "type": "main", "index": 0 }]]
+    },
+    "DB Health Query": {
+      "main": [[{ "node": "Evaluate DB Health", "type": "main", "index": 0 }]]
+    },
+    "Evaluate DB Health": {
+      "main": [[{ "node": "DB Unhealthy?", "type": "main", "index": 0 }]]
+    },
+    "DB Unhealthy?": {
+      "main": [
+        [{ "node": "Send DB Health Alert", "type": "main", "index": 0 }],
+        []
+      ]
+    }
+  },
+
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "staticData": null,
+  "tags": [
+    { "name": "quantcopilot" },
+    { "name": "market-automation" },
+    { "name": "ml-pipeline" }
+  ],
+  "triggerCount": 4,
+  "updatedAt": "2026-05-20T11:00:00.000Z",
+  "versionId": "1"
+}

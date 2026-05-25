@@ -1,0 +1,21 @@
+{
+    "version": "2.0_enhanced",
+    "timestamp": "2026-05-24T16:36:48.638952",
+    "regime_mapping": {
+        "0": "BULL",
+        "1": "BEAR",
+        "2": "HIGH_VOLATILITY",
+        "3": "BULL",
+        "4": "BEAR",
+        "5": "HIGH_VOLATILITY"
+    },
+    "metrics": {
+        "silhouette_score": 0.24197836575649934,
+        "davies_bouldin_score": 1.2077185914237707,
+        "inertia": 513576.2861224184,
+        "n_clusters": 6
+    },
+    "n_clusters": 6,
+    "silhouette_score": 0.24197836575649934,
+    "davies_bouldin_score": 1.2077185914237707
+}

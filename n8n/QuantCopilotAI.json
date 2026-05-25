@@ -1,0 +1,329 @@
+{
+  "name": "QuantCopilotAI",
+  "nodes": [
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8000/run-fetcher",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -1216,
+        -432
+      ],
+      "id": "4fd308b7-c1a6-4b95-95d3-bef4831485fc",
+      "name": "Run Data Fetcher API"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8000/run-indicators",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -1024,
+        -336
+      ],
+      "id": "2eb40903-bfc5-45b1-90e2-5edff40ac2e6",
+      "name": "Run Indicator Engine1"
+    },
+    {
+      "parameters": {
+        "url": "http://host.docker.internal:8000/validate-regime",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -768,
+        -576
+      ],
+      "id": "6a8baae4-4aff-44e1-8bdf-dad42b88e652",
+      "name": "Validate Regime Results"
+    },
+    {
+      "parameters": {
+        "jsCode": "const validationPassed = $json.validation_passed;\n\nreturn [\n  {\n    json: {\n      validation_passed: validationPassed\n    }\n  }\n];"
+      },
+      "id": "bf0c050c-d8ae-4f42-a0d7-734c924dd8f4",
+      "name": "Check Test Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -512,
+        -368
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$json.validation_passed}}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "7462fadd-82fa-4c8d-a7a8-8c642ea9e794",
+      "name": "Tests Passed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        -256,
+        -272
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n\n    trade_date,\n\n    regime_label,\n\n    ROUND(confidence_score::numeric, 2) AS confidence_score,\n\n    volatility_level\n\nFROM market_regimes\n\nORDER BY trade_date DESC\n\nLIMIT 1;",
+        "options": {}
+      },
+      "id": "78048014-803d-4bda-840d-adacd308e6c1",
+      "name": "Fetch Today's Regime Summary",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [
+        -32,
+        -464
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "wMLNfeppyXpr6qJ4",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n\n    ma.ticker_symbol,\n\n    ROUND(ti.rsi::numeric, 2) AS rsi,\n\n    ROUND(ti.macd::numeric, 4) AS macd,\n\n    ROUND(ti.volatility::numeric, 4) AS volatility,\n\n    ROUND(ti.daily_return::numeric, 4) AS daily_return,\n\n    ROUND(ti.atr::numeric, 4) AS atr,\n\n    ROUND(ti.sma_20::numeric, 2) AS sma_20,\n\n    ROUND(ti.ema_20::numeric, 2) AS ema_20\n\nFROM technical_indicators ti\n\nJOIN market_assets ma\nON ti.asset_id = ma.asset_id\n\nWHERE ti.rsi IS NOT NULL\n\nORDER BY\n\n    ti.trade_date DESC,\n\n    ti.volatility DESC,\n\n    ABS(ti.daily_return) DESC\n\nLIMIT 10;",
+        "options": {}
+      },
+      "id": "69d57b6d-6f6f-43ae-9fae-b6ec085efeb2",
+      "name": "Fetch Top Movers",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [
+        -208,
+        64
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "wMLNfeppyXpr6qJ4",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        48,
+        -128
+      ],
+      "id": "3c21a6a0-537a-4fb0-a610-cb68e6cd6d72",
+      "name": "Merge"
+    },
+    {
+      "parameters": {
+        "jsCode": "const regimes = $('Fetch Today\\'s Regime Summary')\n    .all()\n    .map(item => item.json);\n\nconst movers = $('Fetch Top Movers')\n    .all()\n    .map(item => item.json);\n\n\n// =====================================================\n// FORMAT REGIME SUMMARY\n// =====================================================\n\nconst regimeSummary = regimes.length > 0\n\n    ? regimes.map((r, index) => {\n\n        const confidence = r.confidence_score\n            ? (parseFloat(r.confidence_score) * 100).toFixed(1)\n            : 'N/A';\n\n        return (\n            `${index + 1}. ${r.regime_label}\\n` +\n            `   Confidence : ${confidence}%\\n` +\n            `   Volatility : ${r.volatility_level}\\n` +\n            `   Assets     : ${r.asset_count}`\n        );\n\n    }).join('\\n\\n')\n\n    : 'No regime data available.';\n\n\n// =====================================================\n// FORMAT TOP MOVERS\n// =====================================================\n\nconst moversSummary = movers.length > 0\n\n    ? movers.map((m, index) => {\n\n        const rsi = m.rsi\n            ? parseFloat(m.rsi).toFixed(1)\n            : 'N/A';\n\n        const dailyReturn = m.daily_return\n            ? (parseFloat(m.daily_return) * 100).toFixed(2)\n            : '0.00';\n\n        const volatility = m.volatility\n            ? parseFloat(m.volatility).toFixed(4)\n            : 'N/A';\n\n        return (\n            `${index + 1}. ${m.ticker_symbol}\\n` +\n            `   RSI        : ${rsi}\\n` +\n            `   Return     : ${dailyReturn}%\\n` +\n            `   Volatility : ${volatility}`\n        );\n\n    }).join('\\n\\n')\n\n    : 'No high-volatility opportunities detected.';\n\n\n// =====================================================\n// DATE FORMATTING\n// =====================================================\n\nconst today = new Date().toLocaleDateString(\n\n    'en-IN',\n\n    {\n\n        timeZone: 'Asia/Kolkata',\n\n        weekday: 'long',\n\n        year: 'numeric',\n\n        month: 'long',\n\n        day: 'numeric'\n\n    }\n\n);\n\n\n// =====================================================\n// FINAL REPORT\n// =====================================================\n\nconst report =\n\n`📊 QuantCopilot AI — Daily Market Intelligence Report\n\n📅 ${today}\n\n━━━━━━━━━━━━━━━━━━\n🔍 MARKET REGIMES\n━━━━━━━━━━━━━━━━━━\n\n${regimeSummary}\n\n━━━━━━━━━━━━━━━━━━\n📈 HIGH VOLATILITY OPPORTUNITIES\n━━━━━━━━━━━━━━━━━━\n\n${moversSummary}\n\n━━━━━━━━━━━━━━━━━━\n✅ SYSTEM STATUS\n━━━━━━━━━━━━━━━━━━\n\n• Data Fetching        : Successful\n• Indicator Engine     : Successful\n• Regime Validation    : Successful\n• Report Generation    : Successful\n\n🚀 QuantCopilot AI Pipeline Operational\n`;\n\n\n// =====================================================\n// RETURN FINAL JSON\n// =====================================================\n\nreturn [\n\n    {\n\n        json: {\n\n            report,\n\n            generated_at: new Date().toISOString(),\n\n            total_regimes: regimes.length,\n\n            total_movers: movers.length,\n\n            regimes,\n\n            movers\n\n        }\n\n    }\n\n];"
+      },
+      "id": "c9b57a58-028b-4dab-9aaf-70e8d4ff1f27",
+      "name": "Build Daily Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        -320
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8000/build-report",
+        "sendBody": true,
+        "specifyBody": "=json",
+        "bodyParameters": {
+          "parameters": [
+            {}
+          ]
+        },
+        "jsonBody": "={{ {\n  \"status\": \"completed\",\n  \"timestamp\": $json.generated_at,\n  \"total_assets\": $json.total_movers,\n  \"metrics\": {\n    \"total_regimes_detected\": $json.total_regimes,\n    \"total_movers\": $json.total_movers,\n    \"market_regime\": $json.regimes[0].regime_label,\n    \"confidence_score\": $json.regimes[0].confidence_score,\n    \"volatility_level\": $json.regimes[0].volatility_level,\n    \"trade_date\": $json.regimes[0].trade_date\n  },\n  \"assets\": $json.movers,\n  \"indicators\": {\n    \"regime\": $json.regimes[0].regime_label,\n    \"confidence\": ($json.regimes[0].confidence_score * 100).toFixed(1) + \"%\",\n    \"volatility\": $json.regimes[0].volatility_level,\n    \"top_movers\": $json.total_movers\n  },\n  \"insights\": [\n    \"Market Regime: \" + $json.regimes[0].regime_label,\n    \"Confidence: \" + ($json.regimes[0].confidence_score * 100).toFixed(1) + \"%\",\n    \"Volatility: \" + $json.regimes[0].volatility_level,\n    \"Total Movers: \" + $json.total_movers\n  ],\n  \"alerts\": []\n} }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        464,
+        -160
+      ],
+      "id": "cfa2ebe4-c85f-4ce6-b040-8ed998861924",
+      "name": "HTTP Request"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 19 * * 1-5"
+            }
+          ]
+        }
+      },
+      "id": "d54d5696-57a6-4640-a04a-907e746e5e3e",
+      "name": "Daily Market Close Trigger1",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -1456,
+        -400
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Run Data Fetcher API": {
+      "main": [
+        [
+          {
+            "node": "Run Indicator Engine1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Indicator Engine1": {
+      "main": [
+        [
+          {
+            "node": "Validate Regime Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Regime Results": {
+      "main": [
+        [
+          {
+            "node": "Check Test Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tests Passed?": {
+      "main": [
+        [
+          {
+            "node": "Fetch Today's Regime Summary",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Fetch Top Movers",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Fetch Today's Regime Summary": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Top Movers": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Check Test Result": {
+      "main": [
+        [
+          {
+            "node": "Tests Passed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge": {
+      "main": [
+        [
+          {
+            "node": "Build Daily Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Daily Report": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Daily Market Close Trigger1": {
+      "main": [
+        [
+          {
+            "node": "Run Data Fetcher API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false,
+    "timeSavedMode": "fixed",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "versionId": "a26f79f1-5cf1-408c-9072-49eb07e3cf0f",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "af55d3e33d7ed17fe8a93a5bf19f1fe5c94fe84f7b31c987b940b794f9123d93"
+  },
+  "id": "o9QcrFgZ1BWdOYrp",
+  "tags": []
+}
